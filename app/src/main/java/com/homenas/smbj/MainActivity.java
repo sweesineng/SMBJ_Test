@@ -1,16 +1,28 @@
 package com.homenas.smbj;
 
+import android.app.Activity;
+import android.content.Intent;
+import android.database.Cursor;
+import android.net.Uri;
 import android.os.AsyncTask;
 import android.os.Bundle;
+import android.os.storage.StorageManager;
+import android.os.storage.StorageVolume;
+import android.provider.OpenableColumns;
+import android.support.v4.provider.DocumentFile;
 import android.support.v7.app.AppCompatActivity;
 import android.util.Log;
 
+import com.hierynomus.msdtyp.AccessMask;
 import com.hierynomus.msfscc.fileinformation.FileIdBothDirectoryInformation;
+import com.hierynomus.mssmb2.SMB2CreateDisposition;
+import com.hierynomus.mssmb2.SMB2ShareAccess;
 import com.hierynomus.security.bc.BCSecurityProvider;
 import com.hierynomus.smbj.SMBClient;
 import com.hierynomus.smbj.SmbConfig;
 import com.hierynomus.smbj.auth.AuthenticationContext;
 import com.hierynomus.smbj.connection.Connection;
+import com.hierynomus.smbj.io.InputStreamByteChunkProvider;
 import com.hierynomus.smbj.session.Session;
 import com.hierynomus.smbj.share.DiskShare;
 import com.rapid7.client.dcerpc.mssrvs.ServerService;
@@ -18,12 +30,14 @@ import com.rapid7.client.dcerpc.mssrvs.messages.NetShareInfo0;
 import com.rapid7.client.dcerpc.transport.RPCTransport;
 import com.rapid7.client.dcerpc.transport.SMBTransportFactories;
 
-import java.io.File;
-import java.io.FileInputStream;
-import java.io.FileOutputStream;
+import java.io.FileNotFoundException;
 import java.io.IOException;
-import java.nio.channels.FileChannel;
+import java.io.InputStream;
+import java.util.ArrayList;
+import java.util.EnumSet;
 import java.util.List;
+
+import static com.hierynomus.mssmb2.SMB2CreateDisposition.FILE_OPEN;
 
 public class MainActivity extends AppCompatActivity {
     private final SmbConfig cfg = SmbConfig.builder().
@@ -31,13 +45,49 @@ public class MainActivity extends AppCompatActivity {
             withSecurityProvider(new BCSecurityProvider()).
             build();
     private SMBClient client = new SMBClient(cfg);
+    private String mBackupFolder = "smb_test";
     private String ShareName = null;
+    private int PERMISSIONS_REQUEST_CODE = 0;
+    private DocumentFile ExtStorage;
+    private List<String> mList = new ArrayList<>();
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
-        new ConnectSmb().execute();
+        getExtStorage();
+    }
+
+    public void getExtStorage() {
+        StorageManager mStorageManager = this.getSystemService(StorageManager.class);
+        if (mStorageManager != null) {
+            List<StorageVolume> storageVolumes = mStorageManager.getStorageVolumes();
+            for (final StorageVolume volume : storageVolumes) {
+                if(!volume.isPrimary()){
+                    Intent intent = volume.createAccessIntent(null);
+                    startActivityForResult(intent, PERMISSIONS_REQUEST_CODE);
+                }
+            }
+        }
+    }
+
+    @Override
+    public void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == PERMISSIONS_REQUEST_CODE && resultCode == Activity.RESULT_OK) {
+            if(data.getData() != null) {
+                this.getContentResolver().takePersistableUriPermission(data.getData(),Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+                ExtStorage = DocumentFile.fromTreeUri(this,data.getData());
+                if(ExtStorage.exists() && ExtStorage != null) {
+                    for(DocumentFile f : ExtStorage.listFiles()){
+                        if(f.isFile()) {
+                            mList.add(f.getUri().toString());
+                        }
+                    }
+                }
+                new ConnectSmb().execute();
+            }
+        }
     }
 
     private class ConnectSmb extends AsyncTask {
@@ -71,11 +121,20 @@ public class MainActivity extends AppCompatActivity {
                         for(FileIdBothDirectoryInformation f : share.list("","*")) {
                             Log.i("SMBJ", "list: " + f.getFileName());
                         }
-                        if(!share.folderExists("smb_test")) {
-                            share.mkdir("smb_test");
-                            for(FileIdBothDirectoryInformation f : share.list("","*")) {
-                                Log.i("SMBJ", "list: " + f.getFileName());
-                            }
+                        // Create folder if does not exists
+                        if(!share.folderExists(mBackupFolder)) {
+                            share.mkdir(mBackupFolder);
+                        }
+                        // Copy List of file
+                        for(String f : mList) {
+                            Log.i("SMBJ", "Print: " + f);
+                            Log.i("SMBJ", "Name: " + getName(f));
+                            copyTo(share, f, mBackupFolder);
+                        }
+                        // Open test folder inside share folder
+                        com.hierynomus.smbj.share.Directory test = share.openDirectory(mBackupFolder, EnumSet.of(AccessMask.GENERIC_READ),null, SMB2ShareAccess.ALL, FILE_OPEN,null);
+                        for(FileIdBothDirectoryInformation f : test.list()) {
+                            Log.i("SMBJ", "Dir: " + f.getFileName());
                         }
                     }
                 }
@@ -86,37 +145,34 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-//    public static void copyFile(File source, File destination) throws IOException {
-//        byte[] buffer = new byte[<some buffer size>];
-//        try(InputStream in = source.getInputStream()) {
-//            try(OutputStream out = destination.getOutputStream()) {
-//                int bytesRead;
-//                while((bytesRead = in.read(buffer)) != -1) {
-//                    out.write(buffer, 0, bytesRead);
-//                }
-//            }
-//        }
-//    }
-
-    // Fastest way to copy file... http://crunchify.com/java-tips-what-is-the-fastest-way-to-copy-file-in-java/
-    public static void fileCopy(File source, File destination) throws IOException {
-        FileChannel inChannel = new FileInputStream(source).getChannel();
-        FileChannel outChannel = new FileOutputStream(destination).getChannel();
+    private void copyTo(DiskShare mshare, String source, String destination) {
+        String sName = destination + "\\" + getName(source);
+        com.hierynomus.smbj.share.File smbFile = mshare.openFile(sName, EnumSet.of(AccessMask.GENERIC_WRITE, AccessMask.GENERIC_READ), null, null, SMB2CreateDisposition.FILE_OVERWRITE_IF, null);
         try {
-            int maxCount = (64 * 1024 * 1024) - (32 * 1024);
-            long size = inChannel.size();
-            long position = 0;
-            while ( position < size ) {
-                position += inChannel.transferTo( position, maxCount, outChannel );
-            }
-            System.out.println("File Successfully Copied..");
-        }finally{
-            if ( inChannel != null ) {
-                inChannel.close();
-            }
-            if ( outChannel != null ) {
-                outChannel.close();
-            }
+            InputStream is = getContentResolver().openInputStream(Uri.parse(source));
+            long start = System.nanoTime();
+            smbFile.write(new InputStreamByteChunkProvider(is));
+            Log.i("SMBJ","File Successfully Copied.. " + (System.nanoTime()-start) + "s");
+            smbFile.close();
+        } catch (FileNotFoundException e) {
+            e.printStackTrace();
         }
+    }
+
+    private String transformPath(String path) {
+        return path.replace("/", "\\");
+    }
+
+    private String getName(String path) {
+        String name = null;
+        Cursor cursor = getContentResolver().query(Uri.parse(path),null,null,null,null);
+        try {
+            if (cursor != null && cursor.moveToFirst()) {
+                name = cursor.getString(cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME));
+            }
+        } finally {
+            cursor.close();
+        }
+        return name;
     }
 }
