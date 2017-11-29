@@ -2,18 +2,16 @@ package com.homenas.smbj;
 
 import android.app.Activity;
 import android.content.Intent;
-import android.database.Cursor;
-import android.net.Uri;
 import android.os.AsyncTask;
 import android.os.Bundle;
 import android.os.storage.StorageManager;
 import android.os.storage.StorageVolume;
-import android.provider.OpenableColumns;
 import android.support.v4.provider.DocumentFile;
 import android.support.v7.app.AppCompatActivity;
 import android.util.Log;
 
 import com.hierynomus.msdtyp.AccessMask;
+import com.hierynomus.msfscc.FileAttributes;
 import com.hierynomus.msfscc.fileinformation.FileIdBothDirectoryInformation;
 import com.hierynomus.mssmb2.SMB2CreateDisposition;
 import com.hierynomus.mssmb2.SMB2ShareAccess;
@@ -30,14 +28,14 @@ import com.rapid7.client.dcerpc.mssrvs.messages.NetShareInfo0;
 import com.rapid7.client.dcerpc.transport.RPCTransport;
 import com.rapid7.client.dcerpc.transport.SMBTransportFactories;
 
+import org.apache.commons.lang3.StringUtils;
+
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.EnumSet;
 import java.util.List;
-
-import static com.hierynomus.mssmb2.SMB2CreateDisposition.FILE_OPEN;
 
 public class MainActivity extends AppCompatActivity {
     private final SmbConfig cfg = SmbConfig.builder().
@@ -49,7 +47,8 @@ public class MainActivity extends AppCompatActivity {
     private String ShareName = null;
     private int PERMISSIONS_REQUEST_CODE = 0;
     private DocumentFile ExtStorage;
-    private List<String> mList = new ArrayList<>();
+    private List<DocumentFile> mList = new ArrayList<>();
+    private DiskShare share;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -79,11 +78,8 @@ public class MainActivity extends AppCompatActivity {
                 this.getContentResolver().takePersistableUriPermission(data.getData(),Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
                 ExtStorage = DocumentFile.fromTreeUri(this,data.getData());
                 if(ExtStorage.exists() && ExtStorage != null) {
-                    for(DocumentFile f : ExtStorage.listFiles()){
-                        if(f.isFile()) {
-                            mList.add(f.getUri().toString());
-                        }
-                    }
+                    Filewalker fw = new Filewalker();
+                    fw.walk(ExtStorage);
                 }
                 new ConnectSmb().execute();
             }
@@ -94,7 +90,6 @@ public class MainActivity extends AppCompatActivity {
         @Override
         protected Object doInBackground(Object... arg0) {
             try {
-//                Connection connection = client.connect("192.168.174.135");
                 Connection connection = client.connect("136.198.98.114");
                 if(connection.isConnected()) {
                     // Get Max Rear & Write size
@@ -117,25 +112,56 @@ public class MainActivity extends AppCompatActivity {
                         }
 
                         // Access specific share folder
-                        DiskShare share = (DiskShare) session.connectShare(ShareName);
+                        share = (DiskShare) session.connectShare(ShareName);
                         for(FileIdBothDirectoryInformation f : share.list("","*")) {
-                            Log.i("SMBJ", "list: " + f.getFileName());
                         }
                         // Create folder if does not exists
                         if(!share.folderExists(mBackupFolder)) {
                             share.mkdir(mBackupFolder);
                         }
+
+                        for(DocumentFile f : mList) {
+//                            Log.i("Flist", "Uri: " + f.getUri().getPath());
+                            if(f.isDirectory()) {
+                                String path = mBackupFolder + "/" + StringUtils.substringAfterLast(f.getUri().getPath(),"document/").replace(":","/");
+                                String[] folders = StringUtils.split(path,"/");
+                                String mPath = "";
+                                for(int i = 0; i < folders.length; i++) {
+                                    mPath = mPath + folders[i];
+                                    if(!share.folderExists(mPath)) {
+                                        Log.i("Flist" , "Folder create: " + mPath);
+                                        share.mkdir(mPath);
+                                    }
+                                    mPath = mPath + "\\";
+                                }
+                            }
+                            if(f.isFile()){
+                                String path = mBackupFolder + "/" + StringUtils.substringAfterLast(f.getUri().getPath(),"document/").replace(":","/");
+                                com.hierynomus.smbj.share.File smbFile = share.openFile(path.replace("/","\\"), EnumSet.of(AccessMask.GENERIC_WRITE, AccessMask.GENERIC_READ), EnumSet.of(FileAttributes.FILE_ATTRIBUTE_NORMAL), EnumSet.of(SMB2ShareAccess.FILE_SHARE_WRITE), SMB2CreateDisposition.FILE_OVERWRITE_IF, null);
+                                try {
+                                    InputStream is = getContentResolver().openInputStream(f.getUri());
+                                    long start = System.nanoTime();
+                                    smbFile.write(new InputStreamByteChunkProvider(is));
+                                    Log.i("Flist","File Successfully Copied.. " + (System.nanoTime()-start) + "s");
+                                    smbFile.close();
+                                } catch (FileNotFoundException e) {
+                                    e.printStackTrace();
+                                }
+                            }
+                        }
                         // Copy List of file
-                        for(String f : mList) {
-                            Log.i("SMBJ", "Print: " + f);
-                            Log.i("SMBJ", "Name: " + getName(f));
-                            copyTo(share, f, mBackupFolder);
-                        }
+//                        for(String f : mList) {
+//                            if(isDir(f) && !share.folderExists(mBackupFolder+"\\"+getName(f))){
+//                                share.mkdir(mBackupFolder+"\\"+getName(f));
+//                            }else{
+////                            copyTo(share, f, mBackupFolder);
+//                            }
+//                        }
                         // Open test folder inside share folder
-                        com.hierynomus.smbj.share.Directory test = share.openDirectory(mBackupFolder, EnumSet.of(AccessMask.GENERIC_READ),null, SMB2ShareAccess.ALL, FILE_OPEN,null);
-                        for(FileIdBothDirectoryInformation f : test.list()) {
-                            Log.i("SMBJ", "Dir: " + f.getFileName());
-                        }
+//                        com.hierynomus.smbj.share.Directory test = share.openDirectory(mBackupFolder, EnumSet.of(AccessMask.GENERIC_READ),null, SMB2ShareAccess.ALL, FILE_OPEN,null);
+//                        for(FileIdBothDirectoryInformation f : test.list()) {
+//                            Log.i("SMBJ", "Dir: " + f.getFileName());
+//                        }
                     }
                 }
             } catch (IOException e) {
@@ -145,34 +171,19 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    private void copyTo(DiskShare mshare, String source, String destination) {
-        String sName = destination + "\\" + getName(source);
-        com.hierynomus.smbj.share.File smbFile = mshare.openFile(sName, EnumSet.of(AccessMask.GENERIC_WRITE, AccessMask.GENERIC_READ), null, null, SMB2CreateDisposition.FILE_OVERWRITE_IF, null);
-        try {
-            InputStream is = getContentResolver().openInputStream(Uri.parse(source));
-            long start = System.nanoTime();
-            smbFile.write(new InputStreamByteChunkProvider(is));
-            Log.i("SMBJ","File Successfully Copied.. " + (System.nanoTime()-start) + "s");
-            smbFile.close();
-        } catch (FileNotFoundException e) {
-            e.printStackTrace();
-        }
-    }
-
-    private String transformPath(String path) {
-        return path.replace("/", "\\");
-    }
-
-    private String getName(String path) {
-        String name = null;
-        Cursor cursor = getContentResolver().query(Uri.parse(path),null,null,null,null);
-        try {
-            if (cursor != null && cursor.moveToFirst()) {
-                name = cursor.getString(cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME));
+    public class Filewalker {
+        public void walk(DocumentFile root) {
+            for (DocumentFile f : root.listFiles()) {
+                if (f.isDirectory()) {
+                    Log.i("SMBJ", "D: " + f.getUri());
+                    mList.add(f);
+                    walk(f);
+                }
+                else {
+                    Log.i("SMBJ", "F: " + f.getUri());
+                    mList.add(f);
+                }
             }
-        } finally {
-            cursor.close();
         }
-        return name;
     }
 }
