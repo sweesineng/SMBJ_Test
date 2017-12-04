@@ -1,9 +1,7 @@
 package com.homenas.smbj;
 
 import android.content.Context;
-import android.net.Uri;
 import android.os.AsyncTask;
-import android.provider.DocumentsContract;
 import android.support.v4.provider.DocumentFile;
 import android.util.Log;
 import android.webkit.MimeTypeMap;
@@ -34,6 +32,7 @@ import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.lang.ref.WeakReference;
 import java.util.ArrayList;
 import java.util.EnumSet;
@@ -45,7 +44,6 @@ public class SmbBackup extends AsyncTask<Void, Void, Void>{
     private static List<DocumentFile> mList = new ArrayList<>();
     private static DiskShare mShare;
     private boolean LOG = true;
-    private static String ShareName = null;
     private static final SmbConfig cfg = SmbConfig.builder().
             withMultiProtocolNegotiate(true).
             withSecurityProvider(new BCSecurityProvider()).
@@ -72,9 +70,9 @@ public class SmbBackup extends AsyncTask<Void, Void, Void>{
                     final List<NetShareInfo0> shares = serverService.getShares();
                     for(final NetShareInfo0 share : shares) {
                         if(!share.getName().endsWith("$")) {
-                            ShareName = share.getName();
-                            if(LOG) Log.i(TAG, "Share: " + ShareName);
-                            mShare = (DiskShare) session.connectShare(ShareName);
+                            String shareName = share.getName();
+                            if(LOG) Log.i(TAG, "Share: " + shareName);
+                            mShare = (DiskShare) session.connectShare(shareName);
                             // List content inside the share folder
                             for(FileIdBothDirectoryInformation f : mShare.list("","*")) {
                                 if(LOG) Log.i(TAG, "Remote: " + f.getFileName() + " (" + f.getAllocationSize() + ")");
@@ -85,7 +83,8 @@ public class SmbBackup extends AsyncTask<Void, Void, Void>{
                             // Start copy file from list
                             if(mList != null) {
                                 for (DocumentFile src : mList) {
-                                    copy2Smb(mShare, src, mBackup);
+//                                    copy2Smb(mShare, src, mBackup);
+                                    new SyncAll().walk(mShare, src, mBackup);
                                 }
                             }
                         }
@@ -98,6 +97,55 @@ public class SmbBackup extends AsyncTask<Void, Void, Void>{
             e.printStackTrace();
         }
         return null;
+    }
+
+    private class SyncAll {
+        private void walk(DiskShare share, DocumentFile files, String dest) {
+            if(files.isDirectory()) {
+                String path = dest + File.separator + StringUtils.substringAfterLast(files.getUri().getPath(),"document/").replace(":", File.separator);
+                mkSmbDir(share, path);
+                if(files.listFiles().length > 0){
+                    for(DocumentFile f : files.listFiles()) {
+                        walk(share, f, dest);
+                    }
+                }
+            }else{
+                if(files.isFile()) {
+                    String path = dest + File.separator + StringUtils.substringAfterLast(files.getUri().getPath(),"document/").replace(":", File.separator);
+                    path = path.replace(File.separator, "\\");
+                    if(!share.fileExists(path)) {
+                        write2Smb(share, files, path);
+                    }else{
+                        if(files.length() != getSmbSize(mShare,path)) {
+                            write2Smb(share, files, path);
+                        }else{
+                            if(LOG) Log.i(TAG, "Local : Remote in sync (" + files.length() + ":"+ getSmbSize(mShare,path) + ")");
+                        }
+                    }
+                }
+            }
+        }
+        private void write2Smb(DiskShare share, DocumentFile file, String path) {
+            StopWatch stopWatch = new StopWatch();
+            path = path.replace(File.separator,"\\");
+            com.hierynomus.smbj.share.File smbFile = share.openFile(
+                    path,
+                    EnumSet.of(AccessMask.GENERIC_WRITE, AccessMask.GENERIC_READ),
+                    EnumSet.of(FileAttributes.FILE_ATTRIBUTE_NORMAL),
+                    EnumSet.of(SMB2ShareAccess.FILE_SHARE_WRITE),
+                    SMB2CreateDisposition.FILE_OVERWRITE_IF,
+                    null);
+            try {
+                stopWatch.start();
+                InputStream is = contextRef.get().getContentResolver().openInputStream(file.getUri());
+                smbFile.write(new InputStreamByteChunkProvider(is));
+                stopWatch.stop();
+                smbFile.close();
+                if(LOG) Log.i(TAG, "File " + file.getName() + " create in " + stopWatch.getTime() + "ms");
+            } catch (FileNotFoundException e) {
+                e.printStackTrace();
+            }
+        }
     }
 
     private void mkSmbDir(DiskShare share, String folder){
@@ -116,7 +164,7 @@ public class SmbBackup extends AsyncTask<Void, Void, Void>{
                         mPath = mPath + f;
                         if(!share.folderExists(mPath)) {
                             share.mkdir(mPath);
-                            if(LOG) Log.i(TAG, "F create: " + mPath);
+                            if(LOG) Log.i(TAG, "Folder create: " + mPath);
                         }
                         mPath = mPath + "\\";
                     }
@@ -125,95 +173,53 @@ public class SmbBackup extends AsyncTask<Void, Void, Void>{
                 if(!share.folderExists(folder)) {
                     mPath = folder;
                     share.mkdir(mPath);
-                    if(LOG) Log.i(TAG, "F create: " + mPath);
+                    if(LOG) Log.i(TAG, "Folder create: " + mPath);
                 }
             }
 
-        }
-    }
-
-    private void copy2Smb(DiskShare share, DocumentFile file, String dest) {
-        StopWatch stopWatch = new StopWatch();
-        if(share != null && file != null) {
-            String path = dest + File.separator + StringUtils.substringAfterLast(file.getUri().getPath(),"document/").replace(":", File.separator);
-            if(file.isDirectory()) {
-                mkSmbDir(mShare,path);
-            }else{
-                if(file.isFile()) {
-                    path = path.replace(File.separator,"\\");
-                    if(!share.fileExists(path)) {
-                        com.hierynomus.smbj.share.File smbFile = share.openFile(
-                                path,
-                                EnumSet.of(AccessMask.GENERIC_WRITE, AccessMask.GENERIC_READ),
-                                EnumSet.of(FileAttributes.FILE_ATTRIBUTE_NORMAL),
-                                EnumSet.of(SMB2ShareAccess.FILE_SHARE_WRITE),
-                                SMB2CreateDisposition.FILE_OVERWRITE_IF,
-                                null);
-                        try {
-                            InputStream is = contextRef.get().getContentResolver().openInputStream(file.getUri());
-                            stopWatch.start();
-                            smbFile.write(new InputStreamByteChunkProvider(is));
-                            smbFile.close();
-                            stopWatch.stop();
-                            if(LOG) Log.i(TAG, "File: " + file.getName() + " completed: " + stopWatch.getTime() + "ms");
-                            stopWatch.reset();
-                        } catch (FileNotFoundException e) {
-                            e.printStackTrace();
-                        }
-                    }else{
-                        if(file.length() != getSmbSize(mShare,path)) {
-                            if(LOG) Log.i(TAG, "Compare: " + file.getName() + " remote: " + path);
-                            if(LOG) Log.i(TAG, "Compare: " + file.length() + " remote: " + getSmbSize(mShare,path));
-                            com.hierynomus.smbj.share.File smbFile = share.openFile(
-                                    path,
-                                    EnumSet.of(AccessMask.GENERIC_WRITE, AccessMask.GENERIC_READ),
-                                    EnumSet.of(FileAttributes.FILE_ATTRIBUTE_NORMAL),
-                                    EnumSet.of(SMB2ShareAccess.FILE_SHARE_WRITE),
-                                    SMB2CreateDisposition.FILE_OVERWRITE_IF,
-                                    null);
-                            try {
-                                InputStream is = contextRef.get().getContentResolver().openInputStream(file.getUri());
-                                stopWatch.start();
-                                smbFile.write(new InputStreamByteChunkProvider(is));
-                                smbFile.close();
-                                stopWatch.stop();
-                                if(LOG) Log.i(TAG, "File: " + file.getName() + " completed: " + stopWatch.getTime() + "ms");
-                                stopWatch.reset();
-                            } catch (FileNotFoundException e) {
-                                e.printStackTrace();
-                            }
-                        }else{
-                            if(LOG) Log.i(TAG, "Local : Remote in sync (" + file.length() + ":"+ getSmbSize(mShare,path) + ")");
-                        }
-                    }
-                }
-            }
         }
     }
 
     private void copy2Local(DiskShare share, String source, DocumentFile root, String target) {
         com.hierynomus.smbj.share.File src = share.openFile(source, EnumSet.of(AccessMask.GENERIC_READ), null, SMB2ShareAccess.ALL, SMB2CreateDisposition.FILE_OPEN, null);
-        Uri childrenUri = DocumentsContract.buildDocumentUriUsingTree(MainActivity.uri,MainActivity.id + target);
-        DocumentFile childfile = DocumentFile.fromSingleUri(contextRef.get(),childrenUri);
-        if(childfile != null && childfile.exists()) {
-            Log.i(TAG, "Folder exist");
+        String[] folders;
+        DocumentFile newFolder = root;
+        if(target.contains("/")) {
+            folders = StringUtils.split(target, "/");
         }else{
-            Log.i(TAG, "Folder not exist");
-            DocumentFile newFolder = root.createDirectory(target);
+            folders = new String[]{target};
         }
-//        try {
-//            DocumentFile newfile = newFolder.createFile(getSmbMimeType(source),getSmbName(source));
-//            OutputStream os = contextRef.get().getContentResolver().openOutputStream(newfile.getUri());
-//            InputStream is = src.getInputStream();
-//            int read;
-//            byte[] buffer = new byte[1024];
-//            while ((read = is.read(buffer)) != -1) {
-//                os.write(buffer, 0, read);
-//            }
-//        } catch (FileNotFoundException e) {
-//            e.printStackTrace();
-//        } catch (IOException e) {
-//            e.printStackTrace();        }
+        for(String folder: folders) {
+            if(newFolder.findFile(folder) == null) {
+                newFolder = newFolder.createDirectory(folder);
+            }else{
+                newFolder = newFolder.findFile(folder);
+            }
+        }
+        if(newFolder.findFile(getSmbName(source)) != null) {
+            try {
+                DocumentFile newFile = newFolder.createFile(getSmbMimeType(source),getSmbName(source));
+                OutputStream os = contextRef.get().getContentResolver().openOutputStream(newFile.getUri());
+                InputStream is = src.getInputStream();
+                int read;
+                byte[] buffer = new byte[1024];
+                while ((read = is.read(buffer)) != -1) {
+                    if (os != null) {
+                        os.write(buffer, 0, read);
+                    }
+                }
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+        }
+//        Uri childrenUri = DocumentsContract.buildDocumentUriUsingTree(MainActivity.uri,MainActivity.id + target);
+//        DocumentFile childfile = DocumentFile.fromSingleUri(contextRef.get(),childrenUri);
+//        if(childfile != null && childfile.exists()) {
+//            Log.i(TAG, "Folder exist");
+//        }else{
+//            Log.i(TAG, "Folder not exist");
+//            DocumentFile newFolder = root.createDirectory(target);
+//        }
     }
 
     private long getSmbSize(DiskShare share, String path) {
@@ -242,7 +248,6 @@ public class SmbBackup extends AsyncTask<Void, Void, Void>{
 
     private String getSmbMimeType(String path) {
         String extension = MimeTypeMap.getFileExtensionFromUrl(getSmbName(path));
-        String mimeType = MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension);
-        return mimeType;
+        return MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension);
     }
 }
