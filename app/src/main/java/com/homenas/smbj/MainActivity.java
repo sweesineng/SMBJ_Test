@@ -3,25 +3,21 @@ package com.homenas.smbj;
 import android.app.Activity;
 import android.content.Context;
 import android.content.Intent;
+import android.net.Uri;
 import android.os.AsyncTask;
 import android.os.Bundle;
 import android.os.storage.StorageManager;
 import android.os.storage.StorageVolume;
+import android.provider.DocumentsContract;
 import android.support.v4.provider.DocumentFile;
 import android.support.v7.app.AppCompatActivity;
 import android.util.Log;
 
-import com.hierynomus.msdtyp.AccessMask;
-import com.hierynomus.msfscc.FileAttributes;
-import com.hierynomus.msfscc.fileinformation.FileIdBothDirectoryInformation;
-import com.hierynomus.mssmb2.SMB2CreateDisposition;
-import com.hierynomus.mssmb2.SMB2ShareAccess;
 import com.hierynomus.security.bc.BCSecurityProvider;
 import com.hierynomus.smbj.SMBClient;
 import com.hierynomus.smbj.SmbConfig;
 import com.hierynomus.smbj.auth.AuthenticationContext;
 import com.hierynomus.smbj.connection.Connection;
-import com.hierynomus.smbj.io.InputStreamByteChunkProvider;
 import com.hierynomus.smbj.session.Session;
 import com.hierynomus.smbj.share.DiskShare;
 import com.rapid7.client.dcerpc.mssrvs.ServerService;
@@ -29,18 +25,12 @@ import com.rapid7.client.dcerpc.mssrvs.messages.NetShareInfo0;
 import com.rapid7.client.dcerpc.transport.RPCTransport;
 import com.rapid7.client.dcerpc.transport.SMBTransportFactories;
 
-import org.apache.commons.lang3.StringUtils;
-
-import java.io.File;
-import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.OutputStream;
 import java.lang.ref.WeakReference;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
-import java.util.EnumSet;
 import java.util.List;
 
 public class MainActivity extends AppCompatActivity {
@@ -52,7 +42,9 @@ public class MainActivity extends AppCompatActivity {
     private static String mBackupFolder = "smb_test";
     private static String ShareName = null;
     private int PERMISSIONS_REQUEST_CODE = 0;
-    private static DocumentFile ExtStorage;
+    public static DocumentFile ExtStorage;
+    public static String id;
+    public static Uri uri;
     private static List<DocumentFile> mList = new ArrayList<>();
     private static DiskShare share;
 
@@ -82,12 +74,15 @@ public class MainActivity extends AppCompatActivity {
         if (requestCode == PERMISSIONS_REQUEST_CODE && resultCode == Activity.RESULT_OK) {
             if(data.getData() != null) {
                 this.getContentResolver().takePersistableUriPermission(data.getData(),Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
-                ExtStorage = DocumentFile.fromTreeUri(this,data.getData());
+                uri = data.getData();
+                ExtStorage = DocumentFile.fromTreeUri(this, uri);
+                id = DocumentsContract.getTreeDocumentId(uri);
                 if(ExtStorage.exists() && ExtStorage != null) {
                     Filewalker fw = new Filewalker();
                     fw.walk(ExtStorage);
                 }
-                new ConnectSmb(getApplicationContext()).execute();
+//                new ConnectSmb(getApplicationContext()).execute();
+                new SmbBackup(getApplicationContext(),mList).execute();
             }
         }
     }
@@ -101,14 +96,16 @@ public class MainActivity extends AppCompatActivity {
         @Override
         protected Object doInBackground(Object... arg0) {
             try {
-                Connection connection = client.connect("136.198.98.114");
+//                Connection connection = client.connect("136.198.98.114");
+                Connection connection = client.connect("136.198.98.91");
                 if(connection.isConnected()) {
                     // Get Max Rear & Write size
                     int MaxReadSize = connection.getNegotiatedProtocol().getMaxReadSize();
                     int MaxWriteSize = connection.getNegotiatedProtocol().getMaxWriteSize();
                     Log.i("SMBJ", "MaxReadSize: " + MaxReadSize + " MaxWriteSize: " + MaxWriteSize);
                     // Set username and password to empty for anonymous login
-                    Session session = connection.authenticate(new AuthenticationContext("engss","Sinsweeeng".toCharArray(),"jes"));
+//                    Session session = connection.authenticate(new AuthenticationContext("engss","Sinsweeeng".toCharArray(),"jes"));
+                    Session session = connection.authenticate(new AuthenticationContext("staff","ok".toCharArray(),"jes"));
                     if(session.getConnection().isConnected()){
                         Log.i("SMBJ","Session established");
                         // List all share on computer using smbj-rpc
@@ -121,94 +118,7 @@ public class MainActivity extends AppCompatActivity {
                                 ShareName = share.getName();
                             }
                         }
-
-                        // Access specific share folder
-                        share = (DiskShare) session.connectShare(ShareName);
-                        for(FileIdBothDirectoryInformation f : share.list("","*")) {
-                        }
-                        // Create folder if does not exists
-                        if(!share.folderExists(mBackupFolder)) {
-                            share.mkdir(mBackupFolder);
-                        }
-                        // Start timer
-                        long start = System.nanoTime();
-                        for(DocumentFile f : mList) {
-                            if(f.isDirectory()) {
-                                String path = mBackupFolder + File.separator + StringUtils.substringAfterLast(f.getUri().getPath(),"document/").replace(":", File.separator);
-                                String[] folders = StringUtils.split(path,"/");
-                                String mPath = "";
-                                for (String folder : folders) {
-                                    mPath = mPath + folder;
-                                    if (!share.folderExists(mPath)) {
-                                        Log.i("Flist", "F create: " + mPath);
-                                        share.mkdir(mPath);
-                                    }
-                                    mPath = mPath + "\\";
-                                }
-                            }
-                            if(f.isFile()){
-                                String path = (mBackupFolder + File.separator + StringUtils.substringAfterLast(f.getUri().getPath(),"document/").replace(":", File.separator)).replace(File.separator,"\\");
-                                Log.i("Flist", "path: " + path);
-                                if(!share.fileExists(path)) {
-                                    com.hierynomus.smbj.share.File smbFile = share.openFile(
-                                            path,
-                                            EnumSet.of(AccessMask.GENERIC_WRITE, AccessMask.GENERIC_READ),
-                                            EnumSet.of(FileAttributes.FILE_ATTRIBUTE_NORMAL),
-                                            EnumSet.of(SMB2ShareAccess.FILE_SHARE_WRITE),
-                                            SMB2CreateDisposition.FILE_OVERWRITE_IF,
-                                            null);
-                                    try {
-                                        InputStream is = contextRef.get().getContentResolver().openInputStream(f.getUri());
-                                        smbFile.write(new InputStreamByteChunkProvider(is));
-                                        smbFile.close();
-                                        Log.i("Flist","F create: " + path);
-                                    } catch (FileNotFoundException e) {
-                                        e.printStackTrace();
-                                    }
-                                }else{
-//                                    long size=0;
-//                                    Cursor cursor = contextRef.get().getContentResolver().query(f.getUri(), null, null, null);
-//                                    cursor.moveToFirst();
-//                                    size = cursor.getLong(cursor.getColumnIndex(OpenableColumns.SIZE));
-//                                    String src = null;
-//                                    String dest = null;
-//                                    Log.i("Flist", "path: " + path);
-//                                    try {
-//                                        src = TestCheckSum(contextRef.get().getContentResolver().openInputStream(f.getUri()));
-//                                    } catch (NoSuchAlgorithmException e) {
-//                                        e.printStackTrace();
-//                                    }
-//                                    Log.i("Flist", " src: " + src + " dest: " + dest);
-                                }
-                            }
-//                            share.close();
-                        }
-                        // End timer
-                        double end = (double)(System.nanoTime()-start)/1000000000.0;
-                        Log.i("Flist","File Successfully Copied.. " + Double.toString(end) + "s");
-                        // copy back to local
-                        DocumentFile newFolder = ExtStorage.createDirectory("Ess/test");
-                        DocumentFile newfile = newFolder.createFile("application/octet-stream","test.mp4");
-                        long start1 = System.nanoTime();
-                        try {
-                            OutputStream os = contextRef.get().getContentResolver().openOutputStream(newfile.getUri());
-//                            DocumentFile src = DocumentFile.fromSingleUri(contextRef.get(), Uri.parse("content://com.android.externalstorage.documents/tree/0C01-3409%3A/document/0C01-3409%3Atest%2FVID_20171128_021643.mp4"));
-//                            InputStream is = contextRef.get().getContentResolver().openInputStream(src.getUri());
-                            InputStream is = share.openFile("smb_test\\0C01-3409\\test\\VID_20171128_021643.mp4", EnumSet.of(AccessMask.GENERIC_READ), null, SMB2ShareAccess.ALL, SMB2CreateDisposition.FILE_OPEN, null).getInputStream();
-                            int read;
-                            byte[] buffer = new byte[1024];
-                            while ((read = is.read(buffer)) != -1) {
-                                os.write(buffer, 0, read);
-                            }
-                        } catch (FileNotFoundException e) {
-                            e.printStackTrace();
-                        } catch (IOException e) {
-                            e.printStackTrace();
-                        }
-                        double end1 = (double)(System.nanoTime()-start1)/1000000000.0;
-                        Log.i("Flist","File Successfully Copied.. " + Double.toString(end1) + "s");
                     }
-//                    session.close();
                 }
             } catch (IOException e) {
                 e.printStackTrace();
