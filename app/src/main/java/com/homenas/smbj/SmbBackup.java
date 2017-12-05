@@ -1,6 +1,5 @@
 package com.homenas.smbj;
 
-import android.arch.persistence.room.Room;
 import android.content.Context;
 import android.os.AsyncTask;
 import android.support.v4.provider.DocumentFile;
@@ -50,6 +49,8 @@ public class SmbBackup extends AsyncTask<Void, Void, Void>{
             withSecurityProvider(new BCSecurityProvider()).
             build();
     private FileDatabase remoteDB;
+    private List<String> local = new ArrayList<>();
+    private List<String> remote = new ArrayList<>();
 
     public SmbBackup(Context context, List<DocumentFile> list){
         contextRef = new WeakReference<>(context);
@@ -85,17 +86,26 @@ public class SmbBackup extends AsyncTask<Void, Void, Void>{
                                     new SyncAll().walk(mShare, src, mBackup);
                                 }
                             }
-                            remoteDB = Room.databaseBuilder(contextRef.get(), FileDatabase.class,"remote").build();
-//                            new SmbList().getSmbList(mShare,mBackup);
+//                            remoteDB = Room.databaseBuilder(contextRef.get(), FileDatabase.class,"remote").build();
+                            new SmbList().getSmbList(mShare,mBackup);
                         }
                     }
                 }
 //                copy2Local(mShare,"Smb_Backup\\0C01-3409\\test\\VID_20171128_021643.mp4", MainActivity.ExtStorage,"return_test/test");
                 session.close();
-                for(Data d : remoteDB.datadoa().ListAllData()){
-                    Log.i(TAG, "Filename: " + d.getFileName() + " Path: " + d.getPathName() + " uid: " + d.getId());
+                for(String s : local) {
+                    Log.i(TAG, "Local: " + s);
                 }
-                remoteDB.close();
+                for(String s : remote) {
+                    Log.i(TAG, "Remote: " + s);
+                }
+                List<String> diff = new ArrayList<String>(remote);
+                diff.removeAll(local);
+                Log.i(TAG, "diff " + diff.size());
+//                for(Data d : remoteDB.datadoa().ListAllData()){
+//                    Log.i(TAG, "Filename: " + d.getFileName() + " Path: " + d.getPathName() + " uid: " + d.getId());
+//                }
+//                remoteDB.close();
             }
         } catch (IOException e) {
             e.printStackTrace();
@@ -107,6 +117,7 @@ public class SmbBackup extends AsyncTask<Void, Void, Void>{
         private void walk(DiskShare share, DocumentFile files, String dest) {
             if(files.isDirectory()) {
                 String path = dest + File.separator + StringUtils.substringAfterLast(files.getUri().getPath(),"document/").replace(":", File.separator);
+                local.add(path);
                 mkSmbDir(share, path);
                 if(files.listFiles().length > 0){
                     for(DocumentFile f : files.listFiles()) {
@@ -116,6 +127,7 @@ public class SmbBackup extends AsyncTask<Void, Void, Void>{
             }else{
                 if(files.isFile()) {
                     String path = dest + File.separator + StringUtils.substringAfterLast(files.getUri().getPath(),"document/").replace(":", File.separator);
+                    local.add(path);
                     path = path.replace(File.separator, "\\");
                     if(!share.fileExists(path)) {
                         write2Smb(share, files, path);
@@ -263,10 +275,12 @@ public class SmbBackup extends AsyncTask<Void, Void, Void>{
                     tmp = target + "\\" + f.getFileName();
                     if(isFolder(share, tmp)){
                         if(LOG) Log.i(TAG, tmp + " is Dir");
-                        remoteDB.datadoa().insertData(new Data(f.getFileName(), tmp));
+                        remote.add(tmp.replace("\\", "/"));
+//                        remoteDB.datadoa().insertData(new Data(f.getFileName(), tmp));
                         getSmbList(share,tmp);
                     }else{
-                        remoteDB.datadoa().insertData(new Data(f.getFileName(), tmp));
+                        remote.add(tmp.replace("\\", "/"));
+//                        remoteDB.datadoa().insertData(new Data(f.getFileName(), tmp));
                         if(LOG) Log.i(TAG, tmp + " is File");
                     }
                 }
