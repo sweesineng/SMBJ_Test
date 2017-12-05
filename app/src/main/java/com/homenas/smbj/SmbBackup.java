@@ -1,5 +1,6 @@
 package com.homenas.smbj;
 
+import android.arch.persistence.room.Room;
 import android.content.Context;
 import android.os.AsyncTask;
 import android.support.v4.provider.DocumentFile;
@@ -48,6 +49,7 @@ public class SmbBackup extends AsyncTask<Void, Void, Void>{
             withMultiProtocolNegotiate(true).
             withSecurityProvider(new BCSecurityProvider()).
             build();
+    private FileDatabase remoteDB;
 
     public SmbBackup(Context context, List<DocumentFile> list){
         contextRef = new WeakReference<>(context);
@@ -83,12 +85,17 @@ public class SmbBackup extends AsyncTask<Void, Void, Void>{
                                     new SyncAll().walk(mShare, src, mBackup);
                                 }
                             }
-                            new SmbList().getSmbList(mShare,mBackup);
+                            remoteDB = Room.databaseBuilder(contextRef.get(), FileDatabase.class,"remote").build();
+//                            new SmbList().getSmbList(mShare,mBackup);
                         }
                     }
                 }
 //                copy2Local(mShare,"Smb_Backup\\0C01-3409\\test\\VID_20171128_021643.mp4", MainActivity.ExtStorage,"return_test/test");
                 session.close();
+                for(Data d : remoteDB.datadoa().ListAllData()){
+                    Log.i(TAG, "Filename: " + d.getFileName() + " Path: " + d.getPathName() + " uid: " + d.getId());
+                }
+                remoteDB.close();
             }
         } catch (IOException e) {
             e.printStackTrace();
@@ -255,10 +262,12 @@ public class SmbBackup extends AsyncTask<Void, Void, Void>{
                 if(!f.getFileName().startsWith(".")) {
                     tmp = target + "\\" + f.getFileName();
                     if(isFolder(share, tmp)){
-                        Log.i(TAG, tmp + " is Dir");
+                        if(LOG) Log.i(TAG, tmp + " is Dir");
+                        remoteDB.datadoa().insertData(new Data(f.getFileName(), tmp));
                         getSmbList(share,tmp);
                     }else{
-                        Log.i(TAG, tmp + " is File");
+                        remoteDB.datadoa().insertData(new Data(f.getFileName(), tmp));
+                        if(LOG) Log.i(TAG, tmp + " is File");
                     }
                 }
             }
@@ -273,4 +282,5 @@ public class SmbBackup extends AsyncTask<Void, Void, Void>{
             return false;
         }
     }
+
 }
