@@ -43,12 +43,11 @@ public class SmbBackup extends AsyncTask<Void, Void, Void>{
     private WeakReference<Context> contextRef;
     private static List<DocumentFile> mList = new ArrayList<>();
     private static DiskShare mShare;
-    private boolean LOG = true;
+    private boolean LOG = false;
     private static final SmbConfig cfg = SmbConfig.builder().
             withMultiProtocolNegotiate(true).
             withSecurityProvider(new BCSecurityProvider()).
             build();
-
 
     public SmbBackup(Context context, List<DocumentFile> list){
         contextRef = new WeakReference<>(context);
@@ -77,16 +76,14 @@ public class SmbBackup extends AsyncTask<Void, Void, Void>{
                             for(FileIdBothDirectoryInformation f : mShare.list("","*")) {
                                 if(LOG) Log.i(TAG, "Remote: " + f.getFileName() + " (" + f.getAllocationSize() + ")");
                             }
-                            // Create Backup Folder
                             String mBackup = "Smb_Backup";
                             mkSmbDir(mShare, mBackup);
-                            // Start copy file from list
                             if(mList != null) {
                                 for (DocumentFile src : mList) {
-//                                    copy2Smb(mShare, src, mBackup);
                                     new SyncAll().walk(mShare, src, mBackup);
                                 }
                             }
+                            new SmbList().getSmbList(mShare,mBackup);
                         }
                     }
                 }
@@ -249,5 +246,31 @@ public class SmbBackup extends AsyncTask<Void, Void, Void>{
     private String getSmbMimeType(String path) {
         String extension = MimeTypeMap.getFileExtensionFromUrl(getSmbName(path));
         return MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension);
+    }
+
+    private class SmbList {
+        String tmp = "";
+        private void getSmbList(DiskShare share, String target) {
+            for(FileIdBothDirectoryInformation f : share.openDirectory(target, EnumSet.of(AccessMask.GENERIC_READ), null, SMB2ShareAccess.ALL, SMB2CreateDisposition.FILE_OPEN, null).list()) {
+                if(!f.getFileName().startsWith(".")) {
+                    tmp = target + "\\" + f.getFileName();
+                    if(isFolder(share, tmp)){
+                        Log.i(TAG, tmp + " is Dir");
+                        getSmbList(share,tmp);
+                    }else{
+                        Log.i(TAG, tmp + " is File");
+                    }
+                }
+            }
+        }
+
+        private boolean isFolder(DiskShare share, String path) {
+            try {
+                return share.open(path, EnumSet.of(AccessMask.GENERIC_READ), null, SMB2ShareAccess.ALL, SMB2CreateDisposition.FILE_OPEN, null).getFileInformation().getStandardInformation().isDirectory();
+            } catch (TransportException e) {
+                e.printStackTrace();
+            }
+            return false;
+        }
     }
 }
