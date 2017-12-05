@@ -35,6 +35,7 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.lang.ref.WeakReference;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.EnumSet;
 import java.util.List;
 
@@ -93,6 +94,8 @@ public class SmbBackup extends AsyncTask<Void, Void, Void>{
                 }
 //                copy2Local(mShare,"Smb_Backup\\0C01-3409\\test\\VID_20171128_021643.mp4", MainActivity.ExtStorage,"return_test/test");
                 session.close();
+                Collections.sort(local);
+                Collections.sort(remote);
                 for(String s : local) {
                     Log.i(TAG, "Local: " + s);
                 }
